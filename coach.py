@@ -1,4 +1,7 @@
-import requests, json, textwrap
+import requests, json, textwrap, uuid
+from datetime import datetime
+from pathlib import Path
+import rag_store as rs
 
 OLLAMA = "http://localhost:11434/api/generate"
 
@@ -15,13 +18,19 @@ Goals: {goals}
 Constraints: {constraints}
 """).strip()
 
+LOG_FILE = Path("data/history.jsonl"); LOG_FILE.parent.mkdir(exist_ok=True)
+
+def build_prompt(message, profile):
+    memories = rs.query_memories(message, k=3)
+    memory_block = "\n\n== RELEVANT PAST INTERACTIONS ==\n" + "\n---\n".join(memories) if memories else ""
+    return SYSTEM.format(**profile) + memory_block + f"\n\nUser: {message}\nAssistant:"
 
 def ask_llm(message: str, profile: dict, stream: bool = False) -> str:
     """Returns the full assistant response as a string."""
+    prompt = build_prompt(message, profile)
     payload = {
         "model": "mistral:7b",
-        "prompt": SYSTEM.format(**profile) +
-                  f"\n\nUser: {message}\nAssistant:",
+        "prompt": prompt,
         "stream": stream
     }
 
@@ -46,6 +55,19 @@ def ask_llm(message: str, profile: dict, stream: bool = False) -> str:
     return r.json()["response"]
 
 
+def log_and_index(user, assistant_msg, profile):
+    rec = {
+        "id": str(uuid.uuid4()),
+        "ts": datetime.utcnow().isoformat(timespec="seconds"),
+        "user": user,
+        "assistant": assistant_msg,
+        "profile": profile
+    }
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+    rs.add_record(rec)
+
+
 if __name__ == "__main__":
     profile = {
         "name": "Henrique",
@@ -56,17 +78,10 @@ if __name__ == "__main__":
         "constraints": "no injuries, full commercial gym"
     }
 
-    # → retorna string (sem generator)
-    reply = ask_llm("Plan my Monday leg/core session.", profile, stream=False)
+    msg = "Plan my Friday Full Body + grip session, I'm kind tired from the last workout."
+    reply = ask_llm(msg, profile, stream=False)
     print("\n---\n", reply)
 
+    log_and_index(msg, reply, profile)
 
 
-# def log_interaction(user_msg, assistant_msg, profile):
-#     with open("data/history.jsonl", "a") as f:
-#         f.write(json.dumps({
-#             "ts": datetime.now().isoformat(),
-#             "profile": profile,
-#             "user": user_msg,
-#             "assistant": assistant_msg
-#         }) + "\n")
